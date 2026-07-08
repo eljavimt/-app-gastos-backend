@@ -43,56 +43,94 @@ class BankStatementParserService:
     def parse_statement_file(self, file_path: str) -> BankStatementSchema:
         """
         Extrae el texto de un extracto bancario (PDF/CSV/Texto) y utiliza Gemini
-        para parsear la tabla de movimientos en el esquema estructurado.
+        para parsear la tabla de movimientos en el esquema estructurado en trozos (chunks/páginas)
+        para evitar que la IA ignore movimientos en archivos largos.
         """
-        # 1. Extraer texto según extensión
+        import time
+        import pdfplumber
+        
+        # 1. Extraer texto según extensión en páginas o bloques
         ext = os.path.splitext(file_path)[1].lower()
+        pages_text = []
         
         if ext == '.pdf':
-            text = self.pdf_parser.extract_text_from_pdf(file_path)
+            try:
+                with pdfplumber.open(file_path) as pdf:
+                    for page in pdf.pages:
+                        t = page.extract_text()
+                        if t and t.strip():
+                            pages_text.append(t)
+            except Exception as e:
+                logger.warning(f"Error extrayendo por páginas con pdfplumber: {str(e)}. Fallback a extracción simple.")
+                pages_text = [self.pdf_parser.extract_text_from_pdf(file_path)]
         else:
             # Leer como archivo de texto plano para CSV o TXT
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     text = f.read()
+                
+                if not text.strip():
+                    raise ValueError("El archivo está vacío o no contiene texto legible.")
+                
+                # Dividir archivos CSV/TXT grandes en bloques de 100 líneas
+                lines = text.splitlines()
+                chunk_size = 100
+                for i in range(0, len(lines), chunk_size):
+                    chunk = "\n".join(lines[i:i+chunk_size])
+                    if chunk.strip():
+                        pages_text.append(chunk)
             except Exception as e:
                 logger.error(f"Error al leer archivo de texto: {str(e)}")
                 raise ValueError("No se pudo leer el contenido del extracto en formato de texto.")
 
-        if not text.strip():
+        if not pages_text:
             raise ValueError("El archivo está vacío o no contiene texto legible.")
 
-        # 2. Llamada a Gemini con esquema estructurado
+        # 2. Llamada a Gemini con esquema estructurado por cada bloque
         if not settings.GEMINI_API_KEY:
             raise ValueError("No se ha configurado la variable GEMINI_API_KEY en el entorno.")
 
         genai.configure(api_key=settings.GEMINI_API_KEY)
         model = genai.GenerativeModel("gemini-1.5-flash")
 
-        prompt = (
-            "Eres un experto en procesar extractos bancarios. Tu objetivo es convertir la tabla de movimientos "
-            "del banco en un listado estructurado de transacciones.\n"
-            "Presta atención especial a:\n"
-            "- Identificar correctamente la fecha de cada operación.\n"
-            "- Extraer la descripción del comercio o concepto.\n"
-            "- Diferenciar importes negativos (cargos, cobros, transferencias enviadas) de positivos (ingresos, nóminas, abonos).\n\n"
-            f"Texto del Extracto Bancario:\n{text}"
-        )
+        all_transactions = []
+        currency = "EUR"
 
-        try:
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.GenerationConfig(
-                    response_mime_type="application/json",
-                    response_schema=BankStatementSchema,
-                    temperature=0.1
-                )
+        for idx, page_content in enumerate(pages_text):
+            # Control de Rate Limits (15 RPM en el plan gratis de Gemini)
+            if idx > 0:
+                time.sleep(2.0)
+
+            prompt = (
+                "Eres un experto en procesar extractos bancarios. Tu objetivo es convertir la tabla de movimientos "
+                "del banco en un listado estructurado de transacciones.\n"
+                "Presta atención especial a:\n"
+                "- Identificar correctamente la fecha de cada operación.\n"
+                "- Extraer la descripción del comercio o concepto.\n"
+                "- Diferenciar importes negativos (cargos, cobros, transferencias enviadas) de positivos (ingresos, nóminas, abonos).\n\n"
+                f"Texto del Extracto Bancario (Parte {idx+1} de {len(pages_text)}):\n{page_content}"
             )
-            parsed_data = BankStatementSchema.model_validate_json(response.text)
-            return parsed_data
-        except Exception as e:
-            logger.error(f"Error parseando extracto con Gemini: {str(e)}")
-            raise RuntimeError(f"Error de procesamiento de extracto con IA: {str(e)}")
+
+            try:
+                response = model.generate_content(
+                    prompt,
+                    generation_config=genai.GenerationConfig(
+                        response_mime_type="application/json",
+                        response_schema=BankStatementSchema,
+                        temperature=0.1
+                    )
+                )
+                parsed_data = BankStatementSchema.model_validate_json(response.text)
+                if parsed_data.transactions:
+                    all_transactions.extend(parsed_data.transactions)
+                if parsed_data.currency:
+                    currency = parsed_data.currency
+            except Exception as e:
+                logger.error(f"Error parseando bloque {idx+1} con Gemini: {str(e)}")
+                if len(pages_text) == 1:
+                    raise RuntimeError(f"Error de procesamiento de extracto con IA: {str(e)}")
+
+        return BankStatementSchema(currency=currency, transactions=all_transactions)
 
     def save_and_process(self, user_id: str, bank_account_id: str, data: BankStatementSchema) -> int:
         """
