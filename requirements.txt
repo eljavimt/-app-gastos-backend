@@ -12,5 +12,6 @@ pdfplumber>=0.11.0
 pypdf>=4.1.0
 beautifulsoup4>=4.12.0
 a2wsgi>=1.10.0
+python-multipart>=0.0.9
 
 
