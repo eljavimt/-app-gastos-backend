@@ -1,0 +1,16 @@
+fastapi>=0.110.0
+uvicorn>=0.28.0
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+python-dotenv>=1.0.1
+rapidfuzz>=3.6.0
+cryptography>=42.0.0
+google-generativeai>=0.4.0
+pdfplumber>=0.11.0
+pypdf>=4.1.0
+beautifulsoup4>=4.12.0
+a2wsgi>=1.10.0
+
+
