@@ -371,6 +371,73 @@ def update_account(user_id: str, account_id: str, account_data: BankAccountCreat
     return account
 
 
+@app.delete("/users/{user_id}/accounts/{account_id}/transactions", status_code=status.HTTP_200_OK)
+def clear_account_transactions(user_id: str, account_id: str, db: Session = Depends(get_db)):
+    """Elimina todos los movimientos y asientos asociados a una cuenta bancaria sin borrar la cuenta."""
+    account = db.query(BankAccount).filter(
+        BankAccount.id == account_id,
+        BankAccount.user_id == user_id
+    ).first()
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cuenta bancaria no encontrada o no pertenece al usuario."
+        )
+
+    # 1. Eliminar asientos contables asociados a transacciones de esta cuenta
+    db.query(AccountingEntry).filter(
+        AccountingEntry.bank_transaction_id.in_(
+            db.query(BankTransaction.id).filter(BankTransaction.bank_account_id == account_id)
+        )
+    ).delete(synchronize_session=False)
+
+    # 2. Eliminar transacciones de esta cuenta
+    deleted_count = db.query(BankTransaction).filter(
+        BankTransaction.bank_account_id == account_id
+    ).delete(synchronize_session=False)
+
+    # 3. Restablecer saldo y sincronización
+    account.balance = 0.0
+    account.last_synced_at = None
+
+    db.commit()
+    return {
+        "status": "success",
+        "message": f"Se han eliminado correctamente {deleted_count} movimientos de la cuenta.",
+        "deleted_count": deleted_count
+    }
+
+
+@app.delete("/users/{user_id}/accounts/{account_id}", status_code=status.HTTP_200_OK)
+def delete_bank_account(user_id: str, account_id: str, db: Session = Depends(get_db)):
+    """Elimina por completo una cuenta bancaria y todos sus movimientos asociados."""
+    account = db.query(BankAccount).filter(
+        BankAccount.id == account_id,
+        BankAccount.user_id == user_id
+    ).first()
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cuenta bancaria no encontrada o no pertenece al usuario."
+        )
+
+    # 1. Eliminar asientos contables asociados a transacciones de esta cuenta
+    db.query(AccountingEntry).filter(
+        AccountingEntry.bank_transaction_id.in_(
+            db.query(BankTransaction.id).filter(BankTransaction.bank_account_id == account_id)
+        )
+    ).delete(synchronize_session=False)
+
+    # 2. Eliminar la cuenta (cascade delete borrará las transacciones)
+    db.delete(account)
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": "La cuenta bancaria y todos sus movimientos asociados han sido eliminados correctamente."
+    }
+
+
 @app.post("/users/{user_id}/accounts/{account_id}/statements/upload", status_code=status.HTTP_201_CREATED)
 def upload_bank_statement(user_id: str, account_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
     """Sube y procesa un extracto bancario (PDF/CSV/Excel) asociándolo a una cuenta."""
