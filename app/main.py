@@ -8,7 +8,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from app.database import get_db
+from app.database import get_db, Base, engine, SessionLocal
 from app.config import settings
 from app.services.reconciliation import ReconciliationService
 from app.services.invoice_parser import InvoiceParserService
@@ -26,6 +26,88 @@ app = FastAPI(
     description="API de Contabilidad Analítica y Optimización Financiera Personal",
     version="1.0.0"
 )
+
+@app.on_event("startup")
+def startup_event():
+    # 1. Crear tablas en la base de datos automáticamente
+    Base.metadata.create_all(bind=engine)
+    
+    # 2. Insertar categorías semilla si la tabla está vacía
+    db = SessionLocal()
+    try:
+        if db.query(Category).count() == 0:
+            logger.info("Base de datos nueva detectada. Insertando categorías semilla...")
+            
+            # Categorías de primer nivel (padre)
+            parent_categories = [
+                Category(name='Vivienda', code='CAT_VIV', description='Gastos relacionados con el hogar y servicios básicos', is_system=True),
+                Category(name='Suscripciones y Servicios', code='CAT_SUB', description='Servicios recurrentes de streaming, software y membresías', is_system=True),
+                Category(name='Alimentación', code='CAT_ALI', description='Supermercados, restaurantes y compras de comida', is_system=True),
+                Category(name='Transporte y Viajes', code='CAT_TRA', description='Combustible, transporte público, vuelos y mantenimiento del vehículo', is_system=True),
+                Category(name='Ocio y Estilo de Vida', code='CAT_OCI', description='Cine, conciertos, tecnología, libros y actividades recreativas', is_system=True),
+                Category(name='Finanzas e Impuestos', code='CAT_FIN', description='Seguros, comisiones bancarias, impuestos y tasas oficiales', is_system=True),
+                Category(name='Salud y Bienestar', code='CAT_SAL', description='Médicos, farmacias, gimnasio y seguros de salud', is_system=True),
+                Category(name='Educación y Formación', code='CAT_EDU', description='Cursos, libros técnicos, universidad y formación profesional', is_system=True),
+                Category(name='Ingresos', code='CAT_ING', description='Entradas de capital, salarios, dividendos y trabajos freelance', is_system=True)
+            ]
+            db.add_all(parent_categories)
+            db.commit()
+            
+            # Obtener IDs de las categorías padre insertadas
+            parents = {cat.code: cat.id for cat in db.query(Category).all()}
+            
+            # Subcategorías
+            subcategories = [
+                # Vivienda
+                Category(parent_id=parents['CAT_VIV'], name='Alquiler o Hipoteca', code='VIV_ALQ_HIP', description='Pagos mensuales de vivienda', is_system=True),
+                Category(parent_id=parents['CAT_VIV'], name='Electricidad', code='VIV_LUZ', description='Facturas de la luz', is_system=True),
+                Category(parent_id=parents['CAT_VIV'], name='Agua', code='VIV_AGUA', description='Facturas de agua', is_system=True),
+                Category(parent_id=parents['CAT_VIV'], name='Gas', code='VIV_GAS', description='Suministro de gas natural o bombonas', is_system=True),
+                Category(parent_id=parents['CAT_VIV'], name='Internet y Telefonía', code='VIV_TEL_INT', description='Línea móvil y conexión a internet del hogar', is_system=True),
+                Category(parent_id=parents['CAT_VIV'], name='Mantenimiento y Reformas', code='VIV_MANT', description='Reparaciones y mantenimiento del hogar', is_system=True),
+                # Suscripciones
+                Category(parent_id=parents['CAT_SUB'], name='Streaming (Vídeo/Música)', code='SUB_STREAMING', description='Plataformas como Netflix, Spotify, HBO, Disney+', is_system=True),
+                Category(parent_id=parents['CAT_SUB'], name='Software y SaaS', code='SUB_SOFTWARE', description='Herramientas de software, almacenamiento cloud, dominios', is_system=True),
+                Category(parent_id=parents['CAT_SUB'], name='Membresías y Clubes', code='SUB_MEMBRESIA', description='Cuotas de asociaciones u otras membresías no deportivas', is_system=True),
+                # Alimentación
+                Category(parent_id=parents['CAT_ALI'], name='Supermercado', code='ALI_SUPER', description='Compra de comida y productos del hogar para el día a día', is_system=True),
+                Category(parent_id=parents['CAT_ALI'], name='Restaurantes y Cafeterías', code='ALI_REST', description='Comidas fuera de casa, cenas y cafés', is_system=True),
+                Category(parent_id=parents['CAT_ALI'], name='Comida a Domicilio', code='ALI_DELIVERY', description='Pedidos a domicilio (UberEats, Glovo, JustEat)', is_system=True),
+                # Transporte
+                Category(parent_id=parents['CAT_TRA'], name='Combustible', code='TRA_GASOLINA', description='Gasolina, diésel o recarga eléctrica', is_system=True),
+                Category(parent_id=parents['CAT_TRA'], name='Transporte Público y Taxi', code='TRA_PUBLICO', description='Metro, autobús, tren, Uber, Cabify, taxis', is_system=True),
+                Category(parent_id=parents['CAT_TRA'], name='Vuelos y Alojamiento', code='TRA_VIAJES', description='Billetes de avión, hoteles, alquiler de coches para vacaciones', is_system=True),
+                Category(parent_id=parents['CAT_TRA'], name='Mantenimiento del Vehículo', code='TRA_MANT_VEHICULO', description='Revisiones de taller, ITV, neumáticos y reparaciones', is_system=True),
+                # Ocio
+                Category(parent_id=parents['CAT_OCI'], name='Cine, Conciertos y Eventos', code='OCI_EVENTOS', description='Entradas de cine, teatro, conciertos o festivales', is_system=True),
+                Category(parent_id=parents['CAT_OCI'], name='Tecnología y Gadgets', code='OCI_TECNOLOGIA', description='Compra de dispositivos electrónicos, componentes, etc.', is_system=True),
+                Category(parent_id=parents['CAT_OCI'], name='Ropa y Complementos', code='OCI_ROPA', description='Tiendas de moda, calzado y accesorios', is_system=True),
+                Category(parent_id=parents['CAT_OCI'], name='Regalos y Donaciones', code='OCI_REGALOS', description='Regalos a terceros o donaciones a ONGs', is_system=True),
+                # Finanzas
+                Category(parent_id=parents['CAT_FIN'], name='Seguros (Hogar, Coche, Vida)', code='FIN_SEGUROS', description='Primas de seguros contratados', is_system=True),
+                Category(parent_id=parents['CAT_FIN'], name='Comisiones Bancarias', code='FIN_COMISIONES', description='Comisiones de mantenimiento, transferencias, tarjetas', is_system=True),
+                Category(parent_id=parents['CAT_FIN'], name='Impuestos y Tasas', code='FIN_IMPUESTOS', description='Pagos de IRPF, tasas de ayuntamiento, IBI, etc.', is_system=True),
+                # Salud
+                Category(parent_id=parents['CAT_SAL'], name='Farmacia y Medicamentos', code='SAL_FARMACIA', description='Compra de medicinas o productos farmacéuticos', is_system=True),
+                Category(parent_id=parents['CAT_SAL'], name='Gimnasio y Deporte', code='SAL_DEPORTE', description='Cuota de gimnasio, actividades deportivas o material', is_system=True),
+                Category(parent_id=parents['CAT_SAL'], name='Consultas Médicas', code='SAL_MEDICOS', description='Psicólogos, dentistas, médicos especialistas', is_system=True),
+                # Educación
+                Category(parent_id=parents['CAT_EDU'], name='Cursos y Certificaciones', code='EDU_CURSOS', description='Formaciones online, presenciales o exámenes de certificación', is_system=True),
+                Category(parent_id=parents['CAT_EDU'], name='Libros y Material de Estudio', code='EDU_LIBROS', description='Libros técnicos, cuadernos y material académico', is_system=True),
+                # Ingresos
+                Category(parent_id=parents['CAT_ING'], name='Nómina', code='ING_NOMINA', description='Ingresos por cuenta ajena', is_system=True),
+                Category(parent_id=parents['CAT_ING'], name='Freelance y Servicios', code='ING_FREELANCE', description='Cobro de facturas emitidas a clientes', is_system=True),
+                Category(parent_id=parents['CAT_ING'], name='Inversiones', code='ING_INVERSIONES', description='Dividendos, intereses cobrados, venta de activos', is_system=True),
+                Category(parent_id=parents['CAT_ING'], name='Otros Ingresos', code='ING_OTROS', description='Transferencias recibidas de familiares, reembolsos, etc.', is_system=True)
+            ]
+            db.add_all(subcategories)
+            db.commit()
+            logger.info("Base de datos inicializada y categorías semilla creadas.")
+    except Exception as e:
+        logger.error(f"Error inicializando la base de datos: {str(e)}")
+        db.rollback()
+    finally:
+        db.close()
 
 # Configuración de CORS para permitir la conexión desde el Frontend
 app.add_middleware(
